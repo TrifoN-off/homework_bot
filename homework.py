@@ -28,7 +28,7 @@ HOMEWORK_VERDICTS = {
 logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(message)s',
     level=logging.DEBUG,
-    handlers=[logging.StreamHandler(),]
+    handlers=[logging.StreamHandler(), ]
 )
 logger = logging.getLogger(__name__)
 
