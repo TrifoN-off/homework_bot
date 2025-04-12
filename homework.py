@@ -1,6 +1,7 @@
 import time
 import logging
 import os
+from http import HTTPStatus
 
 import requests
 from telebot import TeleBot
@@ -33,6 +34,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+class BadStatusError(Exception):
+    """Ошибка при выполнении запроса к API."""
+
+    pass
+
+
+class UnknownStatusError(Exception):
+    """Неизвестный статус проверки работы."""
+
+    pass
+
+
+class MissingTokenError(Exception):
+    """Отстутствуют необходимые для работы бота токены."""
+
+    pass
+
+
+class APIRequestError(Exception):
+    """Ошибка запроса к API."""
+
+    pass
+
+
 def check_tokens():
     """Проверяет доступность обязательных переменных окружения."""
     tokens = {
@@ -48,7 +73,7 @@ def check_tokens():
             f'Отсутствуют токены: {", ".join(missing_tokens)}. '
             'Программа принудительно остановлена.')
         logger.critical(error_message)
-        raise Exception(error_message)
+        raise MissingTokenError(error_message)
     return True
 
 
@@ -57,9 +82,8 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logger.debug(f'Бот отправил сообщение "{message}"')
-    except Exception:
-
-        logger.error('Ошибка при отправке сообщения.')
+    except Exception as error:
+        logger.error(f'Ошибка при отправке сообщения: {error}')
 
 
 def get_api_answer(timestamp):
@@ -67,44 +91,43 @@ def get_api_answer(timestamp):
     payload = {'from_date': timestamp}
     try:
         response = requests.get(ENDPOINT, headers=HEADERS, params=payload)
-        if response.status_code != 200:
-            error_message = (
-                f'Эндпоинт {ENDPOINT} недоступен. '
-                f'Код ответа API: {response.status_code}'
-            )
-            logger.error(error_message)
-            raise Exception(error_message)
+    except requests.RequestException as error:
+        raise APIRequestError(
+            f'Ошибка при обращении к API: {error}'
+        )
+    if response.status_code is not HTTPStatus.OK:
+        raise BadStatusError(
+            f'Эндпоинт {ENDPOINT} недоступен. '
+            f'Код ответа API: {response.status_code}'
+        )
+    try:
         return response.json()
-    except Exception as error:
-        logger.error(error)
-        raise Exception(error)
+    except ValueError:
+        raise ValueError('Ошибка при обработке ответа от API.')
 
 
 def check_response(response):
     """Проверяет ответ API на соответствие ожидаемой структуре."""
     if not isinstance(response, dict):
-        error_message = 'Ответ API не является словарем.'
-        logger.error(error_message)
-        raise TypeError(error_message)
-    if 'homeworks' not in response or 'current_date' not in response:
-        error_message = 'Отсутствие ожидаемых ключей в ответе API.'
-        logger.error(error_message)
-        raise KeyError(error_message)
+        raise TypeError('Ответ API не является словарем.')
+    if 'homeworks' not in response:
+        raise KeyError('Отсутствует ключ "homeworks" в ответе API.')
+    if 'current_date' not in response:
+        raise KeyError('Отсутствует ключ "current_date" в ответе API.')
     if not isinstance(response['homeworks'], list):
-        error_message = 'Элемент "homeworks" не является списком.'
-        logger.error(error_message)
-        raise TypeError(error_message)
+        raise TypeError('Элемент "homeworks" не является списком.')
 
 
 def parse_status(homework):
     """Извлекает статус домашней работы и формирует текст сообщения."""
-    try:
-        homework_name = homework['homework_name']
-    except Exception as error:
-        raise Exception(error)
+    if 'homework_name' not in homework:
+        raise KeyError('Отсутствует ключ "homework_name".')
+    if 'status' not in homework:
+        raise KeyError('Отсутствует ключ "status".')
+    homework_name = homework['homework_name']
     homework_status = homework['status']
     if homework_status not in HOMEWORK_VERDICTS.keys():
-        raise Exception
+        raise UnknownStatusError('Неизвестный статус проверки работы.')
     verdict = HOMEWORK_VERDICTS.get(homework_status)
     return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
@@ -138,7 +161,8 @@ def main():
             if error_message != last_error:
                 send_message(bot, error_message)
                 last_error = error_message
-        time.sleep(RETRY_PERIOD)
+        finally:
+            time.sleep(RETRY_PERIOD)
 
 
 if __name__ == '__main__':
